@@ -1,8 +1,8 @@
 ---
 title: Support Triage OpenEnv
-emoji: inbox_tray
+emoji: 📥
 colorFrom: blue
-colorTo: cyan
+colorTo: blue
 sdk: docker
 pinned: false
 app_port: 8000
