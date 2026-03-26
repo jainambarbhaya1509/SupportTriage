@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 import html
-import json
 import os
-from pathlib import Path
+import time
 from typing import Any, get_args
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from baseline import DEFAULT_MODEL, run_baseline_sync
 from graders import grade_support_episode
+from mail_bridge import (
+    MailProviderConfig,
+    dismiss_approval_item,
+    load_mail_config_from_env,
+    pending_approval_items,
+    regenerate_approval_draft,
+    send_approved_reply,
+    sync_inbox_for_approval,
+)
 from models import (
     SupportTriageAction,
     SupportTriageObservation,
@@ -30,6 +39,8 @@ ACTION_HELP = {
     "redact_sensitive_data": "Apply redaction before replying to sensitive customer content.",
     "complete_episode": "End the episode when you believe the work is done.",
 }
+
+MAIL_SYNC_INTERVAL_S = 30
 
 
 def inject_styles() -> None:
@@ -180,6 +191,8 @@ def ensure_app_state() -> None:
         st.session_state.latest_baseline = None
         st.session_state.flash_message = "Loaded the default support triage task."
         st.session_state.flash_kind = "success"
+    st.session_state.setdefault("mail_auto_sync_enabled", True)
+    st.session_state.setdefault("mail_last_sync_at", 0.0)
 
 
 def set_flash(message: str, kind: str = "info") -> None:
@@ -316,8 +329,42 @@ def render_flash() -> None:
         st.info(message)
 
 
+def schedule_browser_refresh(interval_s: int) -> None:
+    components.html(
+        f"""
+        <script>
+          window.setTimeout(function() {{
+            window.parent.location.reload();
+          }}, {int(interval_s * 1000)});
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def sync_mailbox_if_needed(
+    config: MailProviderConfig,
+    *,
+    force: bool = False,
+    interval_s: int = MAIL_SYNC_INTERVAL_S,
+) -> None:
+    now = time.time()
+    last_sync_at = float(st.session_state.get("mail_last_sync_at", 0.0))
+    if not force and now - last_sync_at < interval_s:
+        return
+
+    items, created, message = sync_inbox_for_approval(config)
+    st.session_state.mail_last_sync_at = now
+    if created:
+        set_flash(message, "success")
+    elif force:
+        set_flash(message, "info")
+
+
 def render_sidebar() -> None:
     observation = current_observation()
+    mail_config = load_mail_config_from_env()
     task_cards = public_task_cards()
     task_id_to_title = {
         card["task_id"]: f"{card['title']} ({card['task_id']})" for card in task_cards
@@ -418,6 +465,25 @@ def render_sidebar() -> None:
         st.caption("Redact: remove risky content before replying.")
         st.caption("Grade Current State: score the current episode without ending it.")
         st.caption("Send Action: apply the manual action composer payload.")
+
+        st.divider()
+        st.markdown("### Live Mail Approval")
+        if mail_config is None:
+            st.warning("Set MAIL_EMAIL_ADDRESS and MAIL_APP_PASSWORD to enable real Gmail/Outlook approval.")
+            st.caption("Optional env vars: MAIL_PROVIDER, MAIL_IMAP_HOST, MAIL_SMTP_HOST, MAIL_FOLDER.")
+        else:
+            st.success(f"Watching {mail_config.email_address} via {mail_config.provider}.")
+            st.checkbox(
+                "Auto-sync inbox every 30 seconds",
+                key="mail_auto_sync_enabled",
+            )
+            if st.button("Sync inbox now", use_container_width=True):
+                try:
+                    sync_mailbox_if_needed(mail_config, force=True)
+                except Exception as exc:  # pragma: no cover - surfaced in UI
+                    set_flash(str(exc), "error")
+                st.rerun()
+            st.caption("New inbound mail is drafted for approval and only sent after you click Send.")
 
 
 def render_header(observation: SupportTriageObservation) -> None:
@@ -555,6 +621,66 @@ def render_active_ticket(observation: SupportTriageObservation) -> None:
         st.rerun()
 
 
+def render_mail_approval_queue(mail_config: MailProviderConfig | None) -> None:
+    st.markdown("### Mail Approval Queue")
+    st.caption("Real inbound emails create pending drafts here. Nothing is sent until you approve it.")
+
+    if mail_config is None:
+        st.info("Configure MAIL_EMAIL_ADDRESS and MAIL_APP_PASSWORD to enable the live Gmail/Outlook approval flow.")
+        return
+
+    items = pending_approval_items()
+    if not items:
+        st.info("No pending approval drafts yet. Sync the inbox or wait for new inbound mail.")
+        return
+
+    for item in items:
+        with st.expander(f"{item.subject} • {item.from_address}", expanded=False):
+            st.markdown(
+                f"""
+                <div class="detail-shell">
+                  <div class="eyebrow">Incoming Email</div>
+                  <p><strong>From:</strong> {html.escape(item.from_name or item.from_address)} &lt;{html.escape(item.from_address)}&gt;</p>
+                  <p><strong>Received:</strong> {html.escape(item.received_at)}</p>
+                  <p><strong>Snippet:</strong> {html.escape(item.snippet)}</p>
+                  <p>{safe_text(item.body_text)}</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            widget_key = f"mail_{item.source_uid}"
+            draft_value = st.text_area(
+                "Draft reply",
+                value=item.draft_reply,
+                key=f"{widget_key}_draft",
+                height=220,
+            )
+            action_cols = st.columns(3)
+            if action_cols[0].button("Send approved reply", key=f"{widget_key}_send", type="primary", use_container_width=True):
+                try:
+                    sent_item = send_approved_reply(mail_config, item.id, draft_value)
+                    set_flash(f"Sent approved reply to {sent_item.from_address}.", "success")
+                except Exception as exc:  # pragma: no cover - surfaced in UI
+                    set_flash(str(exc), "error")
+                st.rerun()
+
+            if action_cols[1].button("Regenerate draft", key=f"{widget_key}_regen", use_container_width=True):
+                try:
+                    regenerate_approval_draft(item.id)
+                    set_flash(f"Regenerated draft for {item.from_address}.", "success")
+                except Exception as exc:  # pragma: no cover - surfaced in UI
+                    set_flash(str(exc), "error")
+                st.rerun()
+
+            if action_cols[2].button("Dismiss", key=f"{widget_key}_dismiss", use_container_width=True):
+                try:
+                    dismiss_approval_item(item.id)
+                    set_flash(f"Dismissed draft for {item.from_address}.", "info")
+                except Exception as exc:  # pragma: no cover - surfaced in UI
+                    set_flash(str(exc), "error")
+                st.rerun()
+
+
 def render_action_composer(observation: SupportTriageObservation) -> None:
     st.markdown("### Action Composer")
     st.caption("Use this when you want more control than the quick actions.")
@@ -683,11 +809,20 @@ def main() -> None:
     )
     inject_styles()
     ensure_app_state()
+    mail_config = load_mail_config_from_env()
+    if mail_config and st.session_state.get("mail_auto_sync_enabled", True):
+        try:
+            sync_mailbox_if_needed(mail_config, force=False)
+        except Exception as exc:  # pragma: no cover - surfaced in UI
+            set_flash(str(exc), "error")
+        schedule_browser_refresh(MAIL_SYNC_INTERVAL_S)
+
     render_sidebar()
     render_flash()
 
     observation = current_observation()
     render_header(observation)
+    render_mail_approval_queue(mail_config)
 
     inbox_col, active_col = st.columns([1, 1], gap="large")
     with inbox_col:

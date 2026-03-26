@@ -142,3 +142,10 @@ def test_streamlit_app_source_compiles() -> None:
         str(Path(__file__).resolve().parents[1] / "streamlit_app.py"),
         doraise=True,
     )
+
+
+def test_mail_bridge_source_compiles() -> None:
+    py_compile.compile(
+        str(Path(__file__).resolve().parents[1] / "mail_bridge.py"),
+        doraise=True,
+    )

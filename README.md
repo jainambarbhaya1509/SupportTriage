@@ -161,6 +161,42 @@ streamlit run streamlit_app.py
 
 The Streamlit app reuses the same environment and grader directly in-process, so judged tasks, custom sandbox tickets, grading, and Groq-backed blank replies behave the same way as the API server.
 
+## Live Mail Approval
+
+The Streamlit app can poll a real inbox, generate a draft reply, and wait for human approval before sending.
+
+Environment variables:
+
+```bash
+MAIL_PROVIDER=gmail
+MAIL_EMAIL_ADDRESS=jainambarbhaya15@gmail.com
+MAIL_APP_PASSWORD=your_app_password
+MAIL_FOLDER=INBOX
+GROQ_API_KEY=your_groq_key
+GROQ_MODEL=llama-3.1-8b-instant
+```
+
+Optional overrides:
+
+```bash
+MAIL_IMAP_HOST=imap.gmail.com
+MAIL_IMAP_PORT=993
+MAIL_SMTP_HOST=smtp.gmail.com
+MAIL_SMTP_PORT=587
+MAIL_POLL_LIMIT=20
+MAIL_APPROVAL_STATE_PATH=outputs/mail_approval_state.json
+```
+
+For a Microsoft mailbox, switch `MAIL_PROVIDER=outlook` and override the IMAP/SMTP hosts if needed for your tenant.
+
+Workflow:
+
+1. Start the Streamlit app.
+2. The app establishes a mailbox watch cursor on first sync.
+3. New inbound mail creates a pending approval draft in the Streamlit queue.
+4. Review or edit the draft.
+5. Click `Send approved reply` to send the email manually.
+
 Custom sandbox reset example over WebSocket:
 
 ```json

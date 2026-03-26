@@ -29,7 +29,7 @@ support-triage-baseline = "baseline:main"
 [tool.setuptools]
 include-package-data = true
 packages = ["server"]
-py-modules = ["baseline", "client", "graders", "groq_reply", "models", "streamlit_app", "tasks"]
+py-modules = ["baseline", "client", "graders", "groq_reply", "mail_bridge", "models", "streamlit_app", "tasks"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
