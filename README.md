@@ -5,13 +5,13 @@ colorFrom: blue
 colorTo: blue
 sdk: docker
 pinned: false
-app_port: 8000
-base_path: /web
+app_port: 8501
 tags:
   - openenv
   - rl
   - evaluation
   - customer-support
+  - streamlit
 ---
 
 # Support Triage OpenEnv
@@ -202,24 +202,13 @@ The repo also includes `server/Dockerfile` for OpenEnv-style builds.
 
 ## Hugging Face Spaces
 
-The repository is ready for a Docker Space deployment:
+The repository is ready for a Docker Space that launches the separate Streamlit console:
 
-- root `README.md` includes HF Space front matter
-- root `Dockerfile` starts the FastAPI app on port `8000`
-- `openenv.yaml` points to `server.app:app`
-- tags include `openenv`
+- root `README.md` includes Docker Space metadata with `app_port: 8501`
+- root `Dockerfile` installs the `ui` extra and starts `streamlit_app.py`
+- blank auto-replies use `GROQ_API_KEY` from Space secrets
 
-After pushing to a Docker Space, the server exposes:
-
-- `/health`
-- `/reset`
-- `/step`
-- `/state`
-- `/schema`
-- `/tasks`
-- `/grader`
-- `/baseline`
-- `/web`
+For local development, the FastAPI/OpenEnv server still exists at `server.app:app`, but the Hugging Face Space entry point is the Streamlit UI.
 
 ## Project Structure
 
