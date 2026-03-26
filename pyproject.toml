@@ -18,6 +18,9 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
 ]
+ui = [
+    "streamlit>=1.39.0",
+]
 
 [project.scripts]
 server = "server.app:main"
@@ -26,7 +29,7 @@ support-triage-baseline = "baseline:main"
 [tool.setuptools]
 include-package-data = true
 packages = ["server"]
-py-modules = ["baseline", "client", "graders", "groq_reply", "models", "tasks"]
+py-modules = ["baseline", "client", "graders", "groq_reply", "models", "streamlit_app", "tasks"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

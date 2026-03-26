@@ -152,6 +152,15 @@ Run locally:
 uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+Run the separate Streamlit console:
+
+```bash
+pip install -e ".[ui]"
+streamlit run streamlit_app.py
+```
+
+The Streamlit app reuses the same environment and grader directly in-process, so judged tasks, custom sandbox tickets, grading, and Groq-backed blank replies behave the same way as the API server.
+
 Custom sandbox reset example over WebSocket:
 
 ```json

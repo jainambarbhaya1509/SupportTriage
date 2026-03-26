@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import py_compile
 import sys
 from pathlib import Path
 
@@ -134,3 +135,10 @@ def test_auto_baseline_falls_back_to_scripted_without_groq_key(monkeypatch) -> N
 
     assert result.agent_backend == "scripted"
     assert result.mean_score == 1.0
+
+
+def test_streamlit_app_source_compiles() -> None:
+    py_compile.compile(
+        str(Path(__file__).resolve().parents[1] / "streamlit_app.py"),
+        doraise=True,
+    )
