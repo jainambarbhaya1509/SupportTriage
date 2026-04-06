@@ -2,118 +2,143 @@
 title: Support Triage OpenEnv
 emoji: 📥
 colorFrom: blue
-colorTo: blue
+colorTo: indigo
 sdk: docker
 pinned: false
-app_port: 8501
+app_port: 8000
 tags:
   - openenv
   - rl
   - evaluation
   - customer-support
-  - streamlit
+  - fastapi
 ---
 
 # Support Triage OpenEnv
 
-`support_triage_env` is a real-world OpenEnv environment for customer-support operations. The agent works a realistic inbox with billing, security, and product tickets, choosing how to inspect, route, redact, document, and reply to each case.
+`support_triage_env` is a real-world OpenEnv environment for customer-support operations. Agents triage billing, security, and product tickets by opening messages, routing work, applying redaction, writing notes, and sending safe customer replies.
 
-This environment is designed for RL-style agent learning rather than one-shot classification. The reward is dense, deterministic, and shaped by incremental progress toward the hidden target workflow for each task.
+The project is submission-ready for the OpenEnv Round 1 checklist:
 
-For a file-by-file architecture explanation and full runtime walkthrough, see [`CODE_WALKTHROUGH.md`](CODE_WALKTHROUGH.md).
-
-## Why This Is Real-World
-
-Humans do this work every day in SaaS, fintech, and enterprise support teams:
-
-- prioritizing urgent security incidents over routine queue work
-- routing issues to the correct specialty queue
-- redacting sensitive customer data before responding
-- resolving low-risk requests while escalating high-risk ones
-- writing safe, policy-aligned customer replies and internal notes
-
-That combination makes the environment useful for evaluating long-horizon operational agents, not just single-turn labeling models.
+- real-world task simulation
+- full OpenEnv API via `reset()` / `step()` / `state()`
+- 3 graded tasks from easy to hard
+- dense reward shaping with partial progress
+- root-level `inference.py`
+- working `openenv.yaml`
+- Docker deployment for Hugging Face Spaces
+- baseline support for OpenAI, Groq, and any OpenAI-compatible endpoint
 
 ## OpenEnv Interface
 
 - `reset(task_id=...) -> SupportTriageObservation`
 - `step(SupportTriageAction) -> SupportTriageObservation`
 - `state() -> SupportTriageState`
-- `openenv.yaml` included at repo root
+- `openenv.yaml` points to `server.app:app`
 
-The server is exposed through `server.app:app` and is compatible with `openenv validate`.
+The API server exposes standard OpenEnv endpoints plus:
 
-## Action Space
-
-The action model is `SupportTriageAction`.
-
-- `open_ticket`
-  Opens a ticket so the agent can inspect the full body before making changes.
-- `update_ticket`
-  Sets any combination of `priority`, `queue`, `status`, and `tags`.
-- `reply_to_ticket`
-  Sends a customer-visible message. If `message` is omitted and `GROQ_API_KEY` is configured on the server, the backend generates the reply with Groq.
-- `add_internal_note`
-  Adds an internal note for downstream human responders.
-- `redact_sensitive_data`
-  Removes sensitive data from the visible conversation before a reply.
-- `complete_episode`
-  Ends the episode when the agent believes the queue is handled.
-
-## Observation Space
-
-The observation model is `SupportTriageObservation`.
-
-- task metadata: `task_id`, `task_title`, `difficulty`, `objective`, `success_criteria`
-- inbox summary: all visible tickets with current routing state
-- active ticket: full body, latest reply, latest internal note
-- learning signals: `reward`, `completion_score`, `remaining_steps`, `invalid_action_count`
-- feedback: a natural-language description of what the last action did
-
-The full internal state is available through `SupportTriageState` and the `state()` API.
+- `GET /`
+- `GET /tasks`
+- `POST /grader`
+- `GET /baseline`
+- `GET /runtime`
 
 ## Tasks
 
-Three deterministic tasks ship with the environment:
-
 1. `billing_refund_easy`
-   Single-ticket billing escalation. The agent must inspect, classify, tag, and acknowledge a refund complaint safely.
+   Inspect, classify, tag, and acknowledge a billing refund complaint.
 2. `security_and_invoice_medium`
-   Mixed queue with one urgent account-compromise ticket and one routine invoice request. The grader checks urgency ordering and correct routing.
+   Prioritize an account-compromise ticket ahead of a routine invoice request.
 3. `vip_incident_hard`
-   Mixed VIP queue with a leaked API key, raw card data in a refund request, and a low-priority product request. The grader checks redaction-before-reply, internal notes, and correct multi-ticket workflow.
+   Handle a leaked API key, redact a billing-risk ticket before replying, and triage a low-priority product request.
 
-For manual testing, there is also `custom_message_sandbox`, which lets you create a one-off ticket by passing `custom_subject` and `custom_body` to `reset(...)`.
+A manual `custom_message_sandbox` task is also included for ad-hoc testing.
 
-## Reward Design
+## Action Space
 
-The reward is based on incremental grader progress:
+`SupportTriageAction` supports:
 
-- positive reward when the agent opens the right tickets and moves fields toward the hidden target workflow
-- partial reward for getting some fields right even before the episode is perfect
-- penalties for invalid actions, repeated no-ops, premature replies on sensitive tickets, and wasting steps
+- `open_ticket`
+- `update_ticket`
+- `reply_to_ticket`
+- `add_internal_note`
+- `redact_sensitive_data`
+- `complete_episode`
 
-The final grader score is always normalized to `0.0` to `1.0`.
+If `reply_to_ticket.message` is omitted, the backend can auto-generate the reply from the configured OpenAI-compatible provider.
 
-## Additional Endpoints
+## Observation and Reward
 
-- `GET /tasks`
-  Lists all tasks plus the action JSON schema.
-- `POST /grader`
-  Grades a serialized `SupportTriageState` and returns a deterministic `0.0-1.0` score.
-- `GET /baseline`
-  Runs the baseline agent across all three tasks and returns aggregate results.
+Observations include:
 
-`/grader` expects the same JSON returned by `state()`.
+- task metadata
+- inbox summaries
+- one active ticket with full body
+- current reward, completion score, remaining steps, and invalid action count
 
-## Baselines
+Rewards are shaped by grader progress over the full trajectory. Agents earn partial credit for correct routing and workflow progress, and receive penalties for invalid or unsafe behavior.
 
-Two baselines are included:
+## LLM Configuration
 
-- Groq baseline
-  `baseline.py` reads `GROQ_API_KEY`, keeps the workflow policy deterministic, and uses Groq-generated text for customer replies through Groq's OpenAI-compatible chat completions API.
-- Scripted fallback baseline
-  Deterministic reference policy used for smoke tests and Spaces where an API key is not configured.
+The hackathon validator expects these variables for inference:
+
+```bash
+API_BASE_URL=...
+MODEL_NAME=...
+HF_TOKEN=...
+```
+
+All model calls in `inference.py` use the OpenAI Python client against that endpoint.
+
+### OpenAI example
+
+```bash
+export API_BASE_URL=https://api.openai.com/v1
+export MODEL_NAME=gpt-4.1-mini
+export HF_TOKEN=your_openai_api_key
+```
+
+### Groq example
+
+```bash
+export API_BASE_URL=https://api.groq.com/openai/v1
+export MODEL_NAME=llama-3.1-8b-instant
+export HF_TOKEN=your_groq_api_key
+```
+
+### xAI Grok example
+
+```bash
+export API_BASE_URL=https://api.x.ai/v1
+export MODEL_NAME=grok-3-mini-beta
+export HF_TOKEN=your_xai_api_key
+```
+
+For local convenience, the code also supports fallback keys:
+
+- `OPENAI_API_KEY`
+- `GROQ_API_KEY`
+
+But the required submission path is `API_BASE_URL + MODEL_NAME + HF_TOKEN`.
+
+## Baseline and Inference
+
+Two root scripts are provided:
+
+- `baseline.py`
+  Reproducible evaluator with `scripted`, `openai`, `groq`, `grok`, `compatible`, and `auto` modes.
+- `inference.py`
+  Submission script that emits structured `[START]`, `[STEP]`, and `[END]` logs.
+
+Examples:
+
+```bash
+python baseline.py --agent scripted
+python baseline.py --agent groq --model llama-3.1-8b-instant
+python baseline.py --agent openai --model gpt-4.1-mini
+python inference.py
+```
 
 Scripted baseline scores:
 
@@ -121,22 +146,6 @@ Scripted baseline scores:
 - medium: `1.00`
 - hard: `1.00`
 - mean: `1.00`
-
-Groq baseline command:
-
-```bash
-python baseline.py --agent groq --model llama-3.1-8b-instant
-```
-
-If `GROQ_API_KEY` is missing, `--agent auto` falls back to the scripted baseline so `/baseline` still works in a default deployment.
-
-For manual WebSocket or Postman testing, you can also omit `message` on `reply_to_ticket` and let the backend generate the customer reply from Groq.
-
-If your local virtual environment is out of date, reinstall project dependencies:
-
-```bash
-pip install -e ".[dev]"
-```
 
 ## Setup
 
@@ -146,84 +155,29 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Run locally:
+Run the OpenEnv server locally:
 
 ```bash
 uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
-```
-
-Run the separate Streamlit console:
-
-```bash
-pip install -e ".[ui]"
-streamlit run streamlit_app.py
-```
-
-The Streamlit app reuses the same environment and grader directly in-process, so judged tasks, custom sandbox tickets, grading, and Groq-backed blank replies behave the same way as the API server.
-
-## Live Mail Approval
-
-The Streamlit app can poll a real inbox, generate a draft reply, and wait for human approval before sending.
-
-Environment variables:
-
-```bash
-MAIL_PROVIDER=gmail
-MAIL_EMAIL_ADDRESS=jainambarbhaya15@gmail.com
-MAIL_APP_PASSWORD=your_app_password
-MAIL_FOLDER=INBOX
-GROQ_API_KEY=your_groq_key
-GROQ_MODEL=llama-3.1-8b-instant
-```
-
-Optional overrides:
-
-```bash
-MAIL_IMAP_HOST=imap.gmail.com
-MAIL_IMAP_PORT=993
-MAIL_SMTP_HOST=smtp.gmail.com
-MAIL_SMTP_PORT=587
-MAIL_POLL_LIMIT=20
-MAIL_APPROVAL_STATE_PATH=outputs/mail_approval_state.json
-```
-
-For a Microsoft mailbox, switch `MAIL_PROVIDER=outlook` and override the IMAP/SMTP hosts if needed for your tenant.
-
-Workflow:
-
-1. Start the Streamlit app.
-2. The app establishes a mailbox watch cursor on first sync.
-3. New inbound mail creates a pending approval draft in the Streamlit queue.
-4. Review or edit the draft.
-5. Click `Send approved reply` to send the email manually.
-
-Custom sandbox reset example over WebSocket:
-
-```json
-{
-  "type": "reset",
-  "data": {
-    "task_id": "custom_message_sandbox",
-    "custom_ticket_id": "CUSTOM-4242",
-    "custom_subject": "Need help with my refund",
-    "custom_body": "Hi team, I was charged twice and need help understanding the refund status.",
-    "custom_customer_tier": "pro",
-    "custom_channel": "email"
-  }
-}
 ```
 
 Validate locally:
 
 ```bash
 openenv validate
-```
-
-Run tests:
-
-```bash
 pytest
 ```
+
+## Streamlit Utilities
+
+The repo also keeps the separate Streamlit operator console:
+
+```bash
+pip install -e ".[ui]"
+streamlit run streamlit_app.py
+```
+
+That UI is for local operations and demos. The root Docker/Space deployment is API-first for the OpenEnv validator.
 
 ## Docker
 
@@ -234,17 +188,26 @@ docker build -t support-triage-env .
 docker run --rm -p 8000:8000 support-triage-env
 ```
 
-The repo also includes `server/Dockerfile` for OpenEnv-style builds.
+The container starts `uvicorn server.app:app` on port `8000`.
 
 ## Hugging Face Spaces
 
-The repository is ready for a Docker Space that launches the separate Streamlit console:
+This repository is configured for a Docker Space that serves the OpenEnv API:
 
-- root `README.md` includes Docker Space metadata with `app_port: 8501`
-- root `Dockerfile` installs the `ui` extra and starts `streamlit_app.py`
-- blank auto-replies use `GROQ_API_KEY` from Space secrets
+- `README.md` uses `sdk: docker`
+- `app_port: 8000`
+- root `Dockerfile` launches the FastAPI/OpenEnv server
+- `openenv.yaml` points to `server.app:app`
 
-For local development, the FastAPI/OpenEnv server still exists at `server.app:app`, but the Hugging Face Space entry point is the Streamlit UI.
+Recommended Space secrets / variables:
+
+```bash
+API_BASE_URL=https://api.groq.com/openai/v1
+MODEL_NAME=llama-3.1-8b-instant
+HF_TOKEN=your_provider_key
+```
+
+If you want to use OpenAI instead, switch `API_BASE_URL`, `MODEL_NAME`, and `HF_TOKEN` accordingly.
 
 ## Project Structure
 
@@ -253,11 +216,15 @@ For local development, the FastAPI/OpenEnv server still exists at `server.app:ap
 ├── README.md
 ├── Dockerfile
 ├── openenv.yaml
+├── inference.py
+├── baseline.py
+├── llm_client.py
 ├── models.py
 ├── tasks.py
 ├── graders.py
 ├── client.py
-├── baseline.py
+├── groq_reply.py
+├── streamlit_app.py
 ├── server/
 │   ├── app.py
 │   ├── Dockerfile

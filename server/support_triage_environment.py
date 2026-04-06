@@ -3,18 +3,15 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 from uuid import uuid4
-
-import requests
 
 from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import EnvironmentMetadata
 
 try:
     from ..graders import grade_support_episode
-    from ..groq_reply import DEFAULT_GROQ_MODEL, generate_groq_reply
+    from ..groq_reply import generate_llm_reply
     from ..models import (
         ActionRecord,
         ActiveTicket,
@@ -35,7 +32,7 @@ try:
     )
 except ImportError:
     from graders import grade_support_episode
-    from groq_reply import DEFAULT_GROQ_MODEL, generate_groq_reply
+    from groq_reply import generate_llm_reply
     from models import (
         ActionRecord,
         ActiveTicket,
@@ -222,31 +219,23 @@ class SupportTriageEnvironment(
                 if outcome.redaction_required and not ticket.redaction_applied:
                     penalty += 0.20
 
-        used_groq = False
+        provider_used: str | None = None
         message = (action.message or "").strip()
         if not message:
-            api_key = os.environ.get("GROQ_API_KEY")
-            if not api_key:
-                return (
-                    True,
-                    "Reply message is empty and GROQ_API_KEY is not configured for auto-generated replies.",
-                    -0.20,
-                )
-
             try:
                 observation = self._observation("", reward=0.0, done=False)
-                message = generate_groq_reply(
-                    api_key=api_key,
-                    model=os.environ.get("GROQ_MODEL", DEFAULT_GROQ_MODEL),
+                message, provider_used = generate_llm_reply(
                     observation=observation,
                     ticket_id=ticket.ticket_id,
-                ).strip()
-            except (requests.RequestException, ValueError) as exc:
-                return True, f"Groq reply generation failed: {exc}", -0.25
+                )
+                message = message.strip()
+            except ValueError as exc:
+                return True, str(exc), -0.20
+            except Exception as exc:
+                return True, f"LLM reply generation failed: {exc}", -0.25
 
             if not message:
-                return True, "Groq returned an empty reply.", -0.20
-            used_groq = True
+                return True, "The configured LLM returned an empty reply.", -0.20
 
         if self._state.task_id == "vip_incident_hard" and any(char.isdigit() for char in message):
             penalty += 0.15
@@ -255,8 +244,8 @@ class SupportTriageEnvironment(
         ticket.public_reply_sent = True
         if action.ticket_id not in self._state.decision_ticket_order:
             self._state.decision_ticket_order.append(action.ticket_id)
-        if used_groq:
-            return False, f"Sent Groq-generated reply on {ticket.ticket_id}.", -penalty
+        if provider_used:
+            return False, f"Sent {provider_used}-generated reply on {ticket.ticket_id}.", -penalty
         return False, f"Sent reply on {ticket.ticket_id}.", -penalty
 
     def _apply_note(self, action: SupportTriageAction) -> tuple[bool, str, float]:

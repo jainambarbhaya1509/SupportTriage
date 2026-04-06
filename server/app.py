@@ -11,12 +11,14 @@ from pydantic import BaseModel
 try:
     from ..baseline import DEFAULT_MODEL, BaselineRunResult, run_baseline_sync
     from ..graders import GraderResult, grade_support_episode
+    from ..llm_client import resolve_llm_config
     from ..models import SupportTriageAction, SupportTriageObservation, SupportTriageState
     from ..tasks import public_task_cards
     from .support_triage_environment import SupportTriageEnvironment
 except ImportError:
     from baseline import DEFAULT_MODEL, BaselineRunResult, run_baseline_sync
     from graders import GraderResult, grade_support_episode
+    from llm_client import resolve_llm_config
     from models import SupportTriageAction, SupportTriageObservation, SupportTriageState
     from tasks import public_task_cards
     from server.support_triage_environment import SupportTriageEnvironment
@@ -30,6 +32,13 @@ class TasksResponse(BaseModel):
     reset_parameters: dict[str, object]
 
 
+class RuntimeResponse(BaseModel):
+    llm_configured: bool
+    provider: str | None = None
+    model_name: str | None = None
+    api_base_url: str | None = None
+
+
 app: FastAPI = create_app(
     SupportTriageEnvironment,
     SupportTriageAction,
@@ -37,6 +46,28 @@ app: FastAPI = create_app(
     env_name="support_triage_env",
     max_concurrent_envs=8,
 )
+
+
+@app.get("/", summary="Service root")
+def root() -> dict[str, object]:
+    return {
+        "ok": True,
+        "name": "support_triage_env",
+        "docs": "/docs",
+        "health": "/health",
+        "tasks": "/tasks",
+    }
+
+
+@app.get("/runtime", response_model=RuntimeResponse, summary="Show current LLM runtime config")
+def runtime() -> RuntimeResponse:
+    config = resolve_llm_config()
+    return RuntimeResponse(
+        llm_configured=config is not None,
+        provider=config.provider if config else None,
+        model_name=config.model_name if config else None,
+        api_base_url=config.base_url if config else None,
+    )
 
 
 @app.get("/tasks", response_model=TasksResponse, summary="List tasks and action schema")
@@ -91,7 +122,7 @@ def grade_episode(state: SupportTriageState) -> GraderResult:
 
 @app.get("/baseline", response_model=BaselineRunResult, summary="Run the baseline policy")
 async def baseline(
-    agent: str = Query("auto", pattern="^(auto|groq|scripted)$"),
+    agent: str = Query("auto", pattern="^(auto|groq|grok|openai|compatible|scripted)$"),
     model: str = Query(DEFAULT_MODEL),
 ) -> BaselineRunResult:
     return await asyncio.to_thread(

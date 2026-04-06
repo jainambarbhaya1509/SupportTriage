@@ -9,6 +9,7 @@ description = "A real-world OpenEnv support triage environment"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "openai>=2.30.0",
     "openenv-core[core]>=0.2.1",
     "requests>=2.33.0",
     "uvicorn>=0.42.0",
@@ -25,11 +26,23 @@ ui = [
 [project.scripts]
 server = "server.app:main"
 support-triage-baseline = "baseline:main"
+support-triage-inference = "inference:main"
 
 [tool.setuptools]
 include-package-data = true
 packages = ["server"]
-py-modules = ["baseline", "client", "graders", "groq_reply", "mail_bridge", "models", "streamlit_app", "tasks"]
+py-modules = [
+    "baseline",
+    "client",
+    "graders",
+    "groq_reply",
+    "inference",
+    "llm_client",
+    "mail_bridge",
+    "models",
+    "streamlit_app",
+    "tasks",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

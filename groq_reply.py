@@ -1,29 +1,44 @@
-"""Groq-backed reply generation helpers shared by the baseline and environment."""
+"""Reply generation helpers shared by the baseline and environment.
+
+The module name remains `groq_reply.py` for backwards compatibility, but all LLM
+calls now go through the OpenAI Python client so the project supports Groq,
+OpenAI, xAI Grok, and other OpenAI-compatible endpoints.
+"""
 
 from __future__ import annotations
 
-import os
 import re
 from typing import Any
 
-import requests
-
 try:
+    from .llm_client import (
+        DEFAULT_GROQ_BASE_URL,
+        DEFAULT_GROQ_MODEL,
+        LLMConfig,
+        chat_completion,
+        resolve_llm_config,
+    )
     from .models import SupportTriageObservation
     from .tasks import CUSTOM_TASK_ID, get_task, infer_sensitive_content
 except ImportError:
+    from llm_client import (
+        DEFAULT_GROQ_BASE_URL,
+        DEFAULT_GROQ_MODEL,
+        LLMConfig,
+        chat_completion,
+        resolve_llm_config,
+    )
     from models import SupportTriageObservation
     from tasks import CUSTOM_TASK_ID, get_task, infer_sensitive_content
 
-DEFAULT_GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
 DEFAULT_TIMEOUT_S = 30.0
-GROQ_CHAT_COMPLETIONS_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_CHAT_COMPLETIONS_URL = f"{DEFAULT_GROQ_BASE_URL.rstrip('/')}" + "/chat/completions"
 DIGIT_RE = re.compile(r"\d")
 CODE_FENCE_RE = re.compile(r"^```(?:\w+)?\s*|\s*```$", re.DOTALL)
 
 
 def clean_groq_text(raw: Any) -> str:
-    """Normalize Groq output into a plain single-paragraph reply."""
+    """Normalize model output into a plain single-paragraph reply."""
 
     if isinstance(raw, str):
         text = raw
@@ -66,7 +81,7 @@ def build_reply_prompt(
     ) or "none"
     extra_rules: list[str] = [
         "Keep the reply concise and professional.",
-        "Acknowledge the issue and explain the next step.",
+        "Acknowledge the issue and explain the next safe step.",
         "Do not promise outcomes you cannot guarantee.",
         "Return plain text only with no markdown or bullet points.",
     ]
@@ -95,38 +110,73 @@ def build_reply_prompt(
     )
 
 
+def _sanitize_reply(
+    observation: SupportTriageObservation,
+    text: str,
+) -> str:
+    cleaned = clean_groq_text(text)
+    if observation.task_id == "vip_incident_hard":
+        cleaned = DIGIT_RE.sub("", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _generate_reply_with_config(
+    config: LLMConfig,
+    *,
+    observation: SupportTriageObservation,
+    ticket_id: str,
+) -> str:
+    prompt = build_reply_prompt(observation=observation, ticket_id=ticket_id)
+    raw_text = chat_completion(
+        config,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.0,
+        max_tokens=180,
+    )
+    return _sanitize_reply(observation, raw_text)
+
+
+def generate_llm_reply(
+    observation: SupportTriageObservation,
+    ticket_id: str,
+    *,
+    preferred_provider: str | None = None,
+    model_override: str | None = None,
+) -> tuple[str, str]:
+    """Generate a customer-safe reply from the configured OpenAI-compatible provider."""
+
+    config = resolve_llm_config(preferred_provider, model_override=model_override)
+    if config is None:
+        raise ValueError(
+            "Reply message is empty and no LLM is configured. Set API_BASE_URL, MODEL_NAME, and HF_TOKEN, or configure GROQ_API_KEY / OPENAI_API_KEY for local fallback use."
+        )
+    return (
+        _generate_reply_with_config(
+            config,
+            observation=observation,
+            ticket_id=ticket_id,
+        ),
+        config.provider,
+    )
+
+
 def generate_groq_reply(
     api_key: str,
     model: str,
     observation: SupportTriageObservation,
     ticket_id: str,
 ) -> str:
-    """Generate a customer-safe reply from Groq and sanitize the result."""
+    """Backwards-compatible Groq wrapper used by legacy tests and utilities."""
 
-    prompt = build_reply_prompt(observation=observation, ticket_id=ticket_id)
-    response = requests.post(
-        GROQ_CHAT_COMPLETIONS_URL,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.0,
-            "max_completion_tokens": 180,
-        },
-        timeout=DEFAULT_TIMEOUT_S,
+    config = LLMConfig(
+        provider="groq",
+        base_url=DEFAULT_GROQ_BASE_URL,
+        model_name=model or DEFAULT_GROQ_MODEL,
+        api_key=api_key,
     )
-    response.raise_for_status()
-    payload = response.json()
-    choices = payload.get("choices") or []
-    raw_text = ""
-    if choices and isinstance(choices[0], dict):
-        raw_text = choices[0].get("message", {}).get("content", "")
-
-    cleaned = clean_groq_text(raw_text)
-    if observation.task_id == "vip_incident_hard":
-        cleaned = DIGIT_RE.sub("", cleaned)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned
+    return _generate_reply_with_config(
+        config,
+        observation=observation,
+        ticket_id=ticket_id,
+    )

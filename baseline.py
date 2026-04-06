@@ -11,26 +11,27 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+import requests
 from pydantic import BaseModel, Field
 
 try:
     from .client import SupportTriageEnv
     from .graders import grade_support_episode
-    from .groq_reply import DEFAULT_GROQ_MODEL, generate_groq_reply
+    from .groq_reply import generate_llm_reply
+    from .llm_client import default_model_name, provider_label_from_base_url, resolve_llm_config
     from .models import SupportTriageAction, SupportTriageObservation
     from .server.support_triage_environment import SupportTriageEnvironment
     from .tasks import TASKS, get_task
 except ImportError:
     from client import SupportTriageEnv
     from graders import grade_support_episode
-    from groq_reply import DEFAULT_GROQ_MODEL, generate_groq_reply
+    from groq_reply import generate_llm_reply
+    from llm_client import default_model_name, provider_label_from_base_url, resolve_llm_config
     from models import SupportTriageAction, SupportTriageObservation
     from server.support_triage_environment import SupportTriageEnvironment
     from tasks import TASKS, get_task
 
-import requests
-
-DEFAULT_MODEL = DEFAULT_GROQ_MODEL
+DEFAULT_MODEL = default_model_name()
 DEFAULT_TIMEOUT_S = 30.0
 
 
@@ -162,42 +163,64 @@ def scripted_policy_action(observation: SupportTriageObservation) -> SupportTria
     )
 
 
-def groq_policy_action(
+def llm_policy_action(
     observation: SupportTriageObservation,
     *,
-    api_key: str,
+    preferred_provider: str,
     model: str,
 ) -> SupportTriageAction:
     action = scripted_policy_action(observation)
     if action.action_type != "reply_to_ticket" or not action.ticket_id:
         return action
 
+    message, _provider = generate_llm_reply(
+        observation=observation,
+        ticket_id=action.ticket_id,
+        preferred_provider=preferred_provider,
+        model_override=model,
+    )
     return SupportTriageAction(
         action_type="reply_to_ticket",
         ticket_id=action.ticket_id,
-        message=generate_groq_reply(
-            api_key=api_key,
-            model=model,
-            observation=observation,
-            ticket_id=action.ticket_id,
-        )
-        or _reference_reply(action.ticket_id),
+        message=message or _reference_reply(action.ticket_id),
     )
+
+
+def _normalize_backend(agent_backend: str) -> str:
+    normalized = agent_backend.strip().lower()
+    if normalized in {"grok", "xai"}:
+        return "grok"
+    if normalized in {"auto", "scripted", "groq", "openai", "compatible"}:
+        return normalized
+    raise ValueError(f"Unsupported baseline backend: {agent_backend}")
+
+
+def _auto_backend() -> str:
+    api_base_url = os.getenv("API_BASE_URL", "").strip()
+    model_name = os.getenv("MODEL_NAME", "").strip()
+    hf_token = os.getenv("HF_TOKEN", "").strip()
+    if api_base_url and model_name and hf_token:
+        provider = provider_label_from_base_url(api_base_url)
+        return provider if provider in {"groq", "openai", "grok"} else "compatible"
+    if os.getenv("GROQ_API_KEY", "").strip():
+        return "groq"
+    if os.getenv("OPENAI_API_KEY", "").strip():
+        return "openai"
+    return "scripted"
 
 
 def _choose_action(
     observation: SupportTriageObservation,
     agent_backend: str,
     model: str,
-    api_key: str | None,
 ) -> SupportTriageAction:
     if agent_backend == "scripted":
         return scripted_policy_action(observation)
-    if not api_key:
-        raise RuntimeError(
-            "Groq agent requested but GROQ_API_KEY is not set"
-        )
-    return groq_policy_action(observation, api_key=api_key, model=model)
+    return llm_policy_action(
+        observation,
+        preferred_provider=agent_backend,
+        model=model,
+    )
 
 
 def _wait_for_server(base_url: str, timeout_s: float = DEFAULT_TIMEOUT_S) -> None:
@@ -252,13 +275,20 @@ def run_baseline_sync(
 ) -> BaselineRunResult:
     """Run the baseline against all tasks and return reproducible scores."""
 
-    api_key = os.environ.get("GROQ_API_KEY")
-    resolved_backend = agent_backend
-    if agent_backend == "auto":
-        resolved_backend = "groq" if api_key else "scripted"
-
-    if resolved_backend == "groq" and not api_key:
-        raise RuntimeError("GROQ_API_KEY is required when --agent groq is used")
+    requested_backend = _normalize_backend(agent_backend)
+    resolved_backend = _auto_backend() if requested_backend == "auto" else requested_backend
+    resolved_config = None
+    display_backend = resolved_backend
+    if resolved_backend != "scripted":
+        resolved_config = resolve_llm_config(
+            preferred_provider=resolved_backend,
+            model_override=model,
+        )
+        if resolved_config is None:
+            raise RuntimeError(
+                "The requested LLM backend is not configured. Set API_BASE_URL, MODEL_NAME, and HF_TOKEN, or configure provider-specific fallback keys."
+            )
+        display_backend = resolved_config.provider
 
     def _run_with_client(resolved_base_url: str) -> BaselineRunResult:
         task_results: list[BaselineTaskResult] = []
@@ -268,9 +298,8 @@ def run_baseline_sync(
                 while not result.done:
                     action = _choose_action(
                         result.observation,
-                        agent_backend=resolved_backend,
+                        agent_backend=display_backend,
                         model=model,
-                        api_key=api_key,
                     )
                     result = env.step(action)
                 state = env.state()
@@ -280,7 +309,7 @@ def run_baseline_sync(
                         task_id=task.task_id,
                         title=task.title,
                         difficulty=task.difficulty,
-                        agent_backend=resolved_backend,
+                        agent_backend=display_backend,
                         score=grade.score,
                         steps_taken=state.step_count,
                         cumulative_reward=round(state.cumulative_reward, 4),
@@ -291,8 +320,8 @@ def run_baseline_sync(
             sum(result.score for result in task_results) / len(task_results), 4
         )
         return BaselineRunResult(
-            model=model if resolved_backend == "groq" else None,
-            agent_backend=resolved_backend,
+            model=resolved_config.model_name if resolved_config else None,
+            agent_backend=display_backend,
             mean_score=mean_score,
             task_results=task_results,
         )
@@ -305,9 +334,8 @@ def run_baseline_sync(
             while not observation.done:
                 action = _choose_action(
                     observation,
-                    agent_backend=resolved_backend,
+                    agent_backend=display_backend,
                     model=model,
-                    api_key=api_key,
                 )
                 observation = env.step(action)
             state = env.state
@@ -317,7 +345,7 @@ def run_baseline_sync(
                     task_id=task.task_id,
                     title=task.title,
                     difficulty=task.difficulty,
-                    agent_backend=resolved_backend,
+                    agent_backend=display_backend,
                     score=grade.score,
                     steps_taken=state.step_count,
                     cumulative_reward=round(state.cumulative_reward, 4),
@@ -328,8 +356,8 @@ def run_baseline_sync(
             sum(result.score for result in task_results) / len(task_results), 4
         )
         return BaselineRunResult(
-            model=model if resolved_backend == "groq" else None,
-            agent_backend=resolved_backend,
+            model=resolved_config.model_name if resolved_config else None,
+            agent_backend=display_backend,
             mean_score=mean_score,
             task_results=task_results,
         )
@@ -346,12 +374,12 @@ def main() -> None:
     parser.add_argument(
         "--model",
         default=DEFAULT_MODEL,
-        help="Groq model to use when --agent groq or --agent auto with a key present",
+        help="Model override for OpenAI-compatible providers",
     )
     parser.add_argument(
         "--agent",
         default="auto",
-        choices=("auto", "groq", "scripted"),
+        choices=("auto", "groq", "grok", "openai", "compatible", "scripted"),
         help="Which baseline backend to run",
     )
     args = parser.parse_args()

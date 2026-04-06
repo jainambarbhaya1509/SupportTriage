@@ -11,6 +11,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from baseline import DEFAULT_MODEL, run_baseline_sync
+from llm_client import resolve_llm_config
 from graders import grade_support_episode
 from mail_bridge import (
     MailProviderConfig,
@@ -34,7 +35,7 @@ from tasks import CUSTOM_TASK_ID, infer_sensitive_content, public_task_cards
 ACTION_HELP = {
     "open_ticket": "Open a ticket so the full customer message becomes active.",
     "update_ticket": "Change priority, queue, status, and tags for the active ticket.",
-    "reply_to_ticket": "Send a manual reply, or leave the message blank with auto-reply enabled to use Groq.",
+    "reply_to_ticket": "Send a manual reply, or leave the message blank with auto-reply enabled to use the configured LLM.",
     "add_internal_note": "Add an internal-only note for your support teammates.",
     "redact_sensitive_data": "Apply redaction before replying to sensitive customer content.",
     "complete_episode": "End the episode when you believe the work is done.",
@@ -374,10 +375,11 @@ def render_sidebar() -> None:
         st.markdown("### Streamlit Console")
         st.caption("This app uses the same environment and grader directly in-process.")
 
-        if os.environ.get("GROQ_API_KEY"):
-            st.success(f"Groq ready: {os.environ.get('GROQ_MODEL', DEFAULT_MODEL)}")
+        llm_config = resolve_llm_config()
+        if llm_config is not None:
+            st.success(f"LLM ready: {llm_config.provider} / {llm_config.model_name}")
         else:
-            st.warning("Groq not configured. Blank auto-replies will fail until GROQ_API_KEY is set.")
+            st.warning("No LLM configured. Blank auto-replies need API_BASE_URL, MODEL_NAME, and HF_TOKEN, or a local fallback key.")
 
         st.markdown("### Reset Episode")
         selected_task = st.selectbox(
@@ -440,12 +442,12 @@ def render_sidebar() -> None:
         st.markdown("### Baseline")
         baseline_agent = st.selectbox(
             "Agent backend",
-            options=["auto", "scripted", "groq"],
+            options=["auto", "scripted", "groq", "openai", "compatible", "grok"],
             index=0,
             key="sidebar_baseline_agent",
         )
         baseline_model = st.text_input(
-            "Groq model",
+            "LLM model",
             value=os.environ.get("GROQ_MODEL", DEFAULT_MODEL),
             key="sidebar_baseline_model",
         )
@@ -461,7 +463,7 @@ def render_sidebar() -> None:
         st.divider()
         st.markdown("### Button Usage")
         st.caption("Open Ticket: activate a queue item.")
-        st.caption("Groq Reply: ask the backend to draft the customer response.")
+        st.caption("Auto Reply: ask the backend to draft the customer response.")
         st.caption("Redact: remove risky content before replying.")
         st.caption("Grade Current State: score the current episode without ending it.")
         st.caption("Send Action: apply the manual action composer payload.")
@@ -591,7 +593,7 @@ def render_active_ticket(observation: SupportTriageObservation) -> None:
     )
 
     quick_cols = st.columns(3)
-    if quick_cols[0].button("Groq Reply", use_container_width=True):
+    if quick_cols[0].button("Auto Reply", use_container_width=True):
         try:
             run_action(
                 SupportTriageAction(
@@ -726,11 +728,11 @@ def render_action_composer(observation: SupportTriageObservation) -> None:
             )
 
         if action_type == "reply_to_ticket":
-            auto_reply = st.checkbox("Use Groq auto-reply when message is blank", value=True)
+            auto_reply = st.checkbox("Use LLM auto-reply when message is blank", value=True)
             message = st.text_area(
                 "Reply message",
                 value="",
-                placeholder="Leave blank to let Groq draft the reply.",
+                placeholder="Leave blank to let the configured LLM draft the reply.",
                 height=120,
             )
             if message.strip():

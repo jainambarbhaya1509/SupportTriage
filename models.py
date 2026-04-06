@@ -120,8 +120,8 @@ class SupportTriageAction(Action):
     message: str | None = Field(
         default=None,
         description=(
-            "Customer-visible reply for reply_to_ticket. If omitted and the server has "
-            "GROQ_API_KEY configured, the backend may generate the reply automatically."
+            "Customer-visible reply for reply_to_ticket. If omitted and an OpenAI-compatible "
+            "provider is configured, the backend may generate the reply automatically."
         ),
     )
     note: str | None = Field(
