@@ -166,11 +166,14 @@ def openai_policy_action(
     if action.action_type != "reply_to_ticket" or not action.ticket_id:
         return action
 
-    message, _provider = generate_llm_reply(
-        observation=observation,
-        ticket_id=action.ticket_id,
-        model_override=model,
-    )
+    try:
+        message, _provider = generate_llm_reply(
+            observation=observation,
+            ticket_id=action.ticket_id,
+            model_override=model,
+        )
+    except Exception:
+        return action
     return SupportTriageAction(
         action_type="reply_to_ticket",
         ticket_id=action.ticket_id,

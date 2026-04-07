@@ -26,11 +26,14 @@ def choose_action(
     action = scripted_policy_action(observation)
     if action.action_type != "reply_to_ticket" or not action.ticket_id:
         return action, None
-    message, provider = generate_llm_reply(
-        observation=observation,
-        ticket_id=action.ticket_id,
-        model_override=model_name,
-    )
+    try:
+        message, provider = generate_llm_reply(
+            observation=observation,
+            ticket_id=action.ticket_id,
+            model_override=model_name,
+        )
+    except Exception:
+        return action, "scripted_fallback"
     return (
         SupportTriageAction(
             action_type="reply_to_ticket",
