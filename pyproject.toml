@@ -35,7 +35,7 @@ py-modules = [
     "baseline",
     "client",
     "graders",
-    "groq_reply",
+    "openai_reply",
     "inference",
     "llm_client",
     "mail_bridge",

@@ -11,7 +11,7 @@ from openenv.core.env_server.types import EnvironmentMetadata
 
 try:
     from ..graders import grade_support_episode
-    from ..groq_reply import generate_llm_reply
+    from ..openai_reply import generate_llm_reply
     from ..models import (
         ActionRecord,
         ActiveTicket,
@@ -32,7 +32,7 @@ try:
     )
 except ImportError:
     from graders import grade_support_episode
-    from groq_reply import generate_llm_reply
+    from openai_reply import generate_llm_reply
     from models import (
         ActionRecord,
         ActiveTicket,
@@ -232,10 +232,10 @@ class SupportTriageEnvironment(
             except ValueError as exc:
                 return True, str(exc), -0.20
             except Exception as exc:
-                return True, f"LLM reply generation failed: {exc}", -0.25
+                return True, f"OpenAI reply generation failed: {exc}", -0.25
 
             if not message:
-                return True, "The configured LLM returned an empty reply.", -0.20
+                return True, "OpenAI returned an empty reply.", -0.20
 
         if self._state.task_id == "vip_incident_hard" and any(char.isdigit() for char in message):
             penalty += 0.15

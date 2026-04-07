@@ -11,22 +11,20 @@ from pydantic import BaseModel
 try:
     from ..baseline import DEFAULT_MODEL, BaselineRunResult, run_baseline_sync
     from ..graders import GraderResult, grade_support_episode
-    from ..llm_client import resolve_llm_config
+    from ..llm_client import resolve_openai_config
     from ..models import SupportTriageAction, SupportTriageObservation, SupportTriageState
     from ..tasks import public_task_cards
     from .support_triage_environment import SupportTriageEnvironment
 except ImportError:
     from baseline import DEFAULT_MODEL, BaselineRunResult, run_baseline_sync
     from graders import GraderResult, grade_support_episode
-    from llm_client import resolve_llm_config
+    from llm_client import resolve_openai_config
     from models import SupportTriageAction, SupportTriageObservation, SupportTriageState
     from tasks import public_task_cards
     from server.support_triage_environment import SupportTriageEnvironment
 
 
 class TasksResponse(BaseModel):
-    """Response payload for /tasks."""
-
     tasks: list[dict[str, object]]
     action_schema: dict[str, object]
     reset_parameters: dict[str, object]
@@ -59,9 +57,9 @@ def root() -> dict[str, object]:
     }
 
 
-@app.get("/runtime", response_model=RuntimeResponse, summary="Show current LLM runtime config")
+@app.get("/runtime", response_model=RuntimeResponse, summary="Show current OpenAI runtime config")
 def runtime() -> RuntimeResponse:
-    config = resolve_llm_config()
+    config = resolve_openai_config()
     return RuntimeResponse(
         llm_configured=config is not None,
         provider=config.provider if config else None,
@@ -122,7 +120,7 @@ def grade_episode(state: SupportTriageState) -> GraderResult:
 
 @app.get("/baseline", response_model=BaselineRunResult, summary="Run the baseline policy")
 async def baseline(
-    agent: str = Query("auto", pattern="^(auto|groq|grok|openai|compatible|scripted)$"),
+    agent: str = Query("auto", pattern="^(auto|openai|scripted)$"),
     model: str = Query(DEFAULT_MODEL),
 ) -> BaselineRunResult:
     return await asyncio.to_thread(

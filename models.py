@@ -120,7 +120,7 @@ class SupportTriageAction(Action):
     message: str | None = Field(
         default=None,
         description=(
-            "Customer-visible reply for reply_to_ticket. If omitted and an OpenAI-compatible "
+            "Customer-visible reply for reply_to_ticket. If omitted and an OpenAI "
             "provider is configured, the backend may generate the reply automatically."
         ),
     )

@@ -13,9 +13,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import server.support_triage_environment as env_module
 from baseline import run_baseline_sync, scripted_policy_action
 from graders import grade_support_episode
-from groq_reply import build_reply_prompt
-from llm_client import resolve_llm_config
+from llm_client import resolve_openai_config
 from models import SupportTriageAction
+from openai_reply import build_reply_prompt
 from server.app import app
 from server.support_triage_environment import SupportTriageEnvironment
 from tasks import CUSTOM_TASK_ID, TASKS, get_task
@@ -66,7 +66,7 @@ def test_reply_before_redaction_hurts_hard_task_score() -> None:
     assert graded.score < 0.4
 
 
-def test_reply_without_message_uses_auto_llm_when_configured(monkeypatch) -> None:
+def test_reply_without_message_uses_openai_when_configured(monkeypatch) -> None:
     env = SupportTriageEnvironment()
     env.reset(task_id="billing_refund_easy")
     env.step(SupportTriageAction(action_type="open_ticket", ticket_id="BILL-1001"))
@@ -74,9 +74,9 @@ def test_reply_without_message_uses_auto_llm_when_configured(monkeypatch) -> Non
     monkeypatch.setattr(
         env_module,
         "generate_llm_reply",
-        lambda observation, ticket_id, preferred_provider=None, model_override=None: (
+        lambda observation, ticket_id, model_override=None: (
             "I have escalated this billing refund request for review.",
-            "groq",
+            "openai",
         ),
     )
 
@@ -87,7 +87,7 @@ def test_reply_without_message_uses_auto_llm_when_configured(monkeypatch) -> Non
         )
     )
 
-    assert observation.action_feedback == "Sent groq-generated reply on BILL-1001."
+    assert observation.action_feedback == "Sent openai-generated reply on BILL-1001."
     assert env.state.active_ticket().public_reply == "I have escalated this billing refund request for review."
 
 
@@ -134,8 +134,7 @@ def test_custom_ticket_prompt_builds_without_hidden_rubric() -> None:
     assert "Required reply concepts: none" in prompt
 
 
-def test_auto_baseline_falls_back_to_scripted_without_llm_config(monkeypatch) -> None:
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+def test_auto_baseline_falls_back_to_scripted_without_openai_config(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("API_BASE_URL", raising=False)
     monkeypatch.delenv("MODEL_NAME", raising=False)
@@ -147,16 +146,16 @@ def test_auto_baseline_falls_back_to_scripted_without_llm_config(monkeypatch) ->
     assert result.mean_score == 1.0
 
 
-def test_required_env_resolves_compatible_provider(monkeypatch) -> None:
-    monkeypatch.setenv("API_BASE_URL", "https://api.groq.com/openai/v1")
-    monkeypatch.setenv("MODEL_NAME", "llama-3.1-8b-instant")
+def test_required_env_resolves_openai_provider(monkeypatch) -> None:
+    monkeypatch.setenv("API_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("MODEL_NAME", "gpt-4.1-mini")
     monkeypatch.setenv("HF_TOKEN", "test-key")
 
-    config = resolve_llm_config()
+    config = resolve_openai_config()
 
     assert config is not None
-    assert config.provider == "groq"
-    assert config.model_name == "llama-3.1-8b-instant"
+    assert config.provider == "openai"
+    assert config.model_name == "gpt-4.1-mini"
 
 
 def test_root_endpoint_returns_ok() -> None:

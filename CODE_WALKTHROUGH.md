@@ -248,7 +248,7 @@ Main parts:
 - `BaselineTaskResult`
 - `BaselineRunResult`
 - `scripted_policy_action()`
-- `groq_policy_action()`
+- `openai_policy_action()`
 - `run_baseline_sync()`
 
 There are two baseline modes:
@@ -256,10 +256,10 @@ There are two baseline modes:
 - `scripted`
   A deterministic reference policy that uses the hidden target workflow order and canned replies/notes.
 
-- `groq`
-  Uses Groq's OpenAI-compatible chat completions API to generate customer-facing replies while keeping the workflow policy deterministic.
+- `openai`
+  Uses OpenAI's OpenAI chat completions API to generate customer-facing replies while keeping the workflow policy deterministic.
 
-If the user chooses `--agent auto` and no `GROQ_API_KEY` is present, the baseline falls back to the scripted path.
+If the user chooses `--agent auto` and no `HF_TOKEN` is present, the baseline falls back to the scripted path.
 
 The baseline supports two execution styles:
 
@@ -312,7 +312,7 @@ flowchart TD
     C --> F["SupportTriageObservation"]
     D --> G["/grader"]
     A --> H["/baseline"]
-    H --> I["scripted or Groq policy"]
+    H --> I["scripted or OpenAI policy"]
 ```
 
 ## 5. End-to-End Lifecycle
@@ -385,7 +385,7 @@ This is how the agent routes the ticket correctly.
 
 Stores a public reply on the ticket and marks `public_reply_sent = true`.
 
-If `message` is omitted and `GROQ_API_KEY` is configured, the environment generates the customer reply with Groq using the current active ticket context.
+If `message` is omitted and `HF_TOKEN` is configured, the environment generates the customer reply with OpenAI using the current active ticket context.
 
 This can be penalized if:
 
@@ -613,13 +613,13 @@ The scripted policy:
 
 This baseline is deterministic and is used for local reproducibility and tests.
 
-### Groq baseline
+### OpenAI baseline
 
-The Groq baseline:
+The OpenAI baseline:
 
 1. follows the same deterministic routing and state-update policy as the scripted baseline
 2. opens, redacts, notes, tags, and routes tickets with fixed logic
-3. calls Groq only when a customer-visible reply is needed
+3. calls OpenAI only when a customer-visible reply is needed
 4. sanitizes the generated reply before sending it to the environment
 5. steps the environment until completion
 

@@ -243,7 +243,7 @@ CUSTOM_TASK_CARD = {
     "success_criteria": [
         "Reset with custom_subject and custom_body.",
         "Open the ticket before editing or replying.",
-        "Send a safe manual or Groq-generated customer reply.",
+        "Send a safe manual or OpenAI-generated customer reply.",
     ],
     "max_steps": 10,
     "ticket_count": 1,

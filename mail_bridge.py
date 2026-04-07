@@ -19,14 +19,8 @@ from pathlib import Path
 import smtplib
 from typing import Any
 
-import requests
-
-from groq_reply import (
-    DEFAULT_GROQ_MODEL,
-    DEFAULT_TIMEOUT_S,
-    GROQ_CHAT_COMPLETIONS_URL,
-    clean_groq_text,
-)
+from llm_client import chat_completion, default_model_name, resolve_openai_config
+from openai_reply import clean_model_text
 
 PROVIDER_DEFAULTS = {
     "gmail": {
@@ -214,9 +208,8 @@ def _fallback_reply(item: ApprovalItem) -> str:
 
 
 def _generate_mail_draft(item: ApprovalItem) -> str:
-    api_key = os.environ.get("GROQ_API_KEY")
-    model = os.environ.get("GROQ_MODEL", DEFAULT_GROQ_MODEL)
-    if not api_key:
+    config = resolve_openai_config(model_override=default_model_name())
+    if config is None:
         return _fallback_reply(item)
 
     prompt = (
@@ -229,27 +222,13 @@ def _generate_mail_draft(item: ApprovalItem) -> str:
         f"Subject: {item.subject}\n"
         f"Email body:\n{item.body_text}\n"
     )
-    response = requests.post(
-        GROQ_CHAT_COMPLETIONS_URL,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.1,
-            "max_completion_tokens": 250,
-        },
-        timeout=DEFAULT_TIMEOUT_S,
+    raw_text = chat_completion(
+        config,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.1,
+        max_tokens=250,
     )
-    response.raise_for_status()
-    payload = response.json()
-    choices = payload.get("choices") or []
-    if not choices:
-        return _fallback_reply(item)
-    raw_text = choices[0].get("message", {}).get("content", "")
-    cleaned = clean_groq_text(raw_text)
+    cleaned = clean_model_text(raw_text)
     return cleaned or _fallback_reply(item)
 
 

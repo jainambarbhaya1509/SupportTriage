@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 from typing import Any
 
 from baseline import scripted_policy_action
 from graders import grade_support_episode
-from groq_reply import generate_llm_reply
-from llm_client import resolve_llm_config
+from llm_client import resolve_openai_config
 from models import SupportTriageAction, SupportTriageObservation
+from openai_reply import generate_llm_reply
 from server.support_triage_environment import SupportTriageEnvironment
 from tasks import TASKS
 
@@ -22,7 +21,6 @@ def emit(tag: str, payload: dict[str, Any]) -> None:
 
 def choose_action(
     observation: SupportTriageObservation,
-    provider_hint: str | None,
     model_name: str,
 ) -> tuple[SupportTriageAction, str | None]:
     action = scripted_policy_action(observation)
@@ -31,7 +29,6 @@ def choose_action(
     message, provider = generate_llm_reply(
         observation=observation,
         ticket_id=action.ticket_id,
-        preferred_provider=provider_hint,
         model_override=model_name,
     )
     return (
@@ -44,7 +41,7 @@ def choose_action(
     )
 
 
-def run_task(task_id: str, provider_hint: str | None, model_name: str) -> dict[str, Any]:
+def run_task(task_id: str, model_name: str) -> dict[str, Any]:
     env = SupportTriageEnvironment()
     observation = env.reset(task_id=task_id)
     emit(
@@ -60,7 +57,7 @@ def run_task(task_id: str, provider_hint: str | None, model_name: str) -> dict[s
     )
 
     while not observation.done and env.state.step_count < env.state.max_steps:
-        action, provider_used = choose_action(observation, provider_hint, model_name)
+        action, provider_used = choose_action(observation, model_name)
         observation = env.step(action)
         emit(
             "STEP",
@@ -92,20 +89,10 @@ def run_task(task_id: str, provider_hint: str | None, model_name: str) -> dict[s
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the submission inference script.")
-    parser.add_argument(
-        "--provider",
-        default="auto",
-        choices=("auto", "groq", "grok", "openai", "compatible"),
-        help="Optional provider hint. The required env vars still control the endpoint.",
-    )
-    args = parser.parse_args()
-
-    provider_hint = None if args.provider == "auto" else args.provider
-    config = resolve_llm_config(provider_hint)
+    config = resolve_openai_config()
     if config is None:
         print(
-            "ERROR: Set API_BASE_URL, MODEL_NAME, and HF_TOKEN for an OpenAI-compatible endpoint.",
+            "ERROR: Set API_BASE_URL, MODEL_NAME, and HF_TOKEN for OpenAI.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -122,7 +109,7 @@ def main() -> None:
 
     results: list[dict[str, Any]] = []
     for task in TASKS:
-        results.append(run_task(task.task_id, config.provider, config.model_name))
+        results.append(run_task(task.task_id, config.model_name))
 
     mean_score = round(sum(item["score"] for item in results) / len(results), 4)
     emit(

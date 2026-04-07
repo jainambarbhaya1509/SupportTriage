@@ -11,7 +11,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from baseline import DEFAULT_MODEL, run_baseline_sync
-from llm_client import resolve_llm_config
+from llm_client import resolve_openai_config
 from graders import grade_support_episode
 from mail_bridge import (
     MailProviderConfig,
@@ -35,7 +35,7 @@ from tasks import CUSTOM_TASK_ID, infer_sensitive_content, public_task_cards
 ACTION_HELP = {
     "open_ticket": "Open a ticket so the full customer message becomes active.",
     "update_ticket": "Change priority, queue, status, and tags for the active ticket.",
-    "reply_to_ticket": "Send a manual reply, or leave the message blank with auto-reply enabled to use the configured LLM.",
+    "reply_to_ticket": "Send a manual reply, or leave the message blank with auto-reply enabled to use OpenAI.",
     "add_internal_note": "Add an internal-only note for your support teammates.",
     "redact_sensitive_data": "Apply redaction before replying to sensitive customer content.",
     "complete_episode": "End the episode when you believe the work is done.",
@@ -305,7 +305,7 @@ def next_step_guidance(observation: SupportTriageObservation) -> tuple[str, str,
     if not active.public_reply_sent:
         return (
             "Reply to the customer",
-            f"Draft the next customer response for {active.ticket_id} with Groq or by hand.",
+            f"Draft the next customer response for {active.ticket_id} with OpenAI or by hand.",
             "Reply",
         )
 
@@ -375,11 +375,11 @@ def render_sidebar() -> None:
         st.markdown("### Streamlit Console")
         st.caption("This app uses the same environment and grader directly in-process.")
 
-        llm_config = resolve_llm_config()
+        llm_config = resolve_openai_config()
         if llm_config is not None:
-            st.success(f"LLM ready: {llm_config.provider} / {llm_config.model_name}")
+            st.success(f"OpenAI ready: {llm_config.model_name}")
         else:
-            st.warning("No LLM configured. Blank auto-replies need API_BASE_URL, MODEL_NAME, and HF_TOKEN, or a local fallback key.")
+            st.warning("OpenAI is not configured. Blank auto-replies need API_BASE_URL, MODEL_NAME, and HF_TOKEN.")
 
         st.markdown("### Reset Episode")
         selected_task = st.selectbox(
@@ -442,13 +442,13 @@ def render_sidebar() -> None:
         st.markdown("### Baseline")
         baseline_agent = st.selectbox(
             "Agent backend",
-            options=["auto", "scripted", "groq", "openai", "compatible", "grok"],
+            options=["auto", "scripted", "openai"],
             index=0,
             key="sidebar_baseline_agent",
         )
         baseline_model = st.text_input(
-            "LLM model",
-            value=os.environ.get("GROQ_MODEL", DEFAULT_MODEL),
+            "OpenAI model",
+            value=os.environ.get("MODEL_NAME", DEFAULT_MODEL),
             key="sidebar_baseline_model",
         )
         if st.button("Run Baseline", use_container_width=True):
@@ -463,7 +463,7 @@ def render_sidebar() -> None:
         st.divider()
         st.markdown("### Button Usage")
         st.caption("Open Ticket: activate a queue item.")
-        st.caption("Auto Reply: ask the backend to draft the customer response.")
+        st.caption("OpenAI Reply: ask the backend to draft the customer response.")
         st.caption("Redact: remove risky content before replying.")
         st.caption("Grade Current State: score the current episode without ending it.")
         st.caption("Send Action: apply the manual action composer payload.")
@@ -593,7 +593,7 @@ def render_active_ticket(observation: SupportTriageObservation) -> None:
     )
 
     quick_cols = st.columns(3)
-    if quick_cols[0].button("Auto Reply", use_container_width=True):
+    if quick_cols[0].button("OpenAI Reply", use_container_width=True):
         try:
             run_action(
                 SupportTriageAction(
@@ -728,11 +728,11 @@ def render_action_composer(observation: SupportTriageObservation) -> None:
             )
 
         if action_type == "reply_to_ticket":
-            auto_reply = st.checkbox("Use LLM auto-reply when message is blank", value=True)
+            auto_reply = st.checkbox("Use OpenAI auto-reply when message is blank", value=True)
             message = st.text_area(
                 "Reply message",
                 value="",
-                placeholder="Leave blank to let the configured LLM draft the reply.",
+                placeholder="Leave blank to let OpenAI draft the reply.",
                 height=120,
             )
             if message.strip():

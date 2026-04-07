@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 import sys
 import time
@@ -17,17 +16,17 @@ from pydantic import BaseModel, Field
 try:
     from .client import SupportTriageEnv
     from .graders import grade_support_episode
-    from .groq_reply import generate_llm_reply
-    from .llm_client import default_model_name, provider_label_from_base_url, resolve_llm_config
+    from .llm_client import default_model_name, resolve_openai_config
     from .models import SupportTriageAction, SupportTriageObservation
+    from .openai_reply import generate_llm_reply
     from .server.support_triage_environment import SupportTriageEnvironment
     from .tasks import TASKS, get_task
 except ImportError:
     from client import SupportTriageEnv
     from graders import grade_support_episode
-    from groq_reply import generate_llm_reply
-    from llm_client import default_model_name, provider_label_from_base_url, resolve_llm_config
+    from llm_client import default_model_name, resolve_openai_config
     from models import SupportTriageAction, SupportTriageObservation
+    from openai_reply import generate_llm_reply
     from server.support_triage_environment import SupportTriageEnvironment
     from tasks import TASKS, get_task
 
@@ -36,8 +35,6 @@ DEFAULT_TIMEOUT_S = 30.0
 
 
 class BaselineTaskResult(BaseModel):
-    """Per-task baseline result."""
-
     task_id: str
     title: str
     difficulty: str
@@ -48,8 +45,6 @@ class BaselineTaskResult(BaseModel):
 
 
 class BaselineRunResult(BaseModel):
-    """Aggregate result for /baseline and CLI usage."""
-
     model: str | None = None
     agent_backend: str
     mean_score: float
@@ -149,12 +144,11 @@ def scripted_policy_action(observation: SupportTriageObservation) -> SupportTria
                 tags=list(expected.required_tags),
             )
 
-        reply = _reference_reply(ticket_id)
         if not target.public_reply_sent and expected.required_reply_keywords:
             return SupportTriageAction(
                 action_type="reply_to_ticket",
                 ticket_id=ticket_id,
-                message=reply,
+                message=_reference_reply(ticket_id),
             )
 
     return SupportTriageAction(
@@ -163,10 +157,9 @@ def scripted_policy_action(observation: SupportTriageObservation) -> SupportTria
     )
 
 
-def llm_policy_action(
+def openai_policy_action(
     observation: SupportTriageObservation,
     *,
-    preferred_provider: str,
     model: str,
 ) -> SupportTriageAction:
     action = scripted_policy_action(observation)
@@ -176,7 +169,6 @@ def llm_policy_action(
     message, _provider = generate_llm_reply(
         observation=observation,
         ticket_id=action.ticket_id,
-        preferred_provider=preferred_provider,
         model_override=model,
     )
     return SupportTriageAction(
@@ -188,25 +180,13 @@ def llm_policy_action(
 
 def _normalize_backend(agent_backend: str) -> str:
     normalized = agent_backend.strip().lower()
-    if normalized in {"grok", "xai"}:
-        return "grok"
-    if normalized in {"auto", "scripted", "groq", "openai", "compatible"}:
+    if normalized in {"auto", "scripted", "openai"}:
         return normalized
     raise ValueError(f"Unsupported baseline backend: {agent_backend}")
 
 
 def _auto_backend() -> str:
-    api_base_url = os.getenv("API_BASE_URL", "").strip()
-    model_name = os.getenv("MODEL_NAME", "").strip()
-    hf_token = os.getenv("HF_TOKEN", "").strip()
-    if api_base_url and model_name and hf_token:
-        provider = provider_label_from_base_url(api_base_url)
-        return provider if provider in {"groq", "openai", "grok"} else "compatible"
-    if os.getenv("GROQ_API_KEY", "").strip():
-        return "groq"
-    if os.getenv("OPENAI_API_KEY", "").strip():
-        return "openai"
-    return "scripted"
+    return "openai" if resolve_openai_config() else "scripted"
 
 
 def _choose_action(
@@ -216,11 +196,7 @@ def _choose_action(
 ) -> SupportTriageAction:
     if agent_backend == "scripted":
         return scripted_policy_action(observation)
-    return llm_policy_action(
-        observation,
-        preferred_provider=agent_backend,
-        model=model,
-    )
+    return openai_policy_action(observation, model=model)
 
 
 def _wait_for_server(base_url: str, timeout_s: float = DEFAULT_TIMEOUT_S) -> None:
@@ -273,22 +249,15 @@ def run_baseline_sync(
     model: str = DEFAULT_MODEL,
     agent_backend: str = "auto",
 ) -> BaselineRunResult:
-    """Run the baseline against all tasks and return reproducible scores."""
-
     requested_backend = _normalize_backend(agent_backend)
     resolved_backend = _auto_backend() if requested_backend == "auto" else requested_backend
     resolved_config = None
-    display_backend = resolved_backend
-    if resolved_backend != "scripted":
-        resolved_config = resolve_llm_config(
-            preferred_provider=resolved_backend,
-            model_override=model,
-        )
+    if resolved_backend == "openai":
+        resolved_config = resolve_openai_config(model_override=model)
         if resolved_config is None:
             raise RuntimeError(
-                "The requested LLM backend is not configured. Set API_BASE_URL, MODEL_NAME, and HF_TOKEN, or configure provider-specific fallback keys."
+                "OpenAI is not configured. Set API_BASE_URL, MODEL_NAME, and HF_TOKEN."
             )
-        display_backend = resolved_config.provider
 
     def _run_with_client(resolved_base_url: str) -> BaselineRunResult:
         task_results: list[BaselineTaskResult] = []
@@ -298,7 +267,7 @@ def run_baseline_sync(
                 while not result.done:
                     action = _choose_action(
                         result.observation,
-                        agent_backend=display_backend,
+                        agent_backend=resolved_backend,
                         model=model,
                     )
                     result = env.step(action)
@@ -309,7 +278,7 @@ def run_baseline_sync(
                         task_id=task.task_id,
                         title=task.title,
                         difficulty=task.difficulty,
-                        agent_backend=display_backend,
+                        agent_backend=resolved_backend,
                         score=grade.score,
                         steps_taken=state.step_count,
                         cumulative_reward=round(state.cumulative_reward, 4),
@@ -321,7 +290,7 @@ def run_baseline_sync(
         )
         return BaselineRunResult(
             model=resolved_config.model_name if resolved_config else None,
-            agent_backend=display_backend,
+            agent_backend=resolved_backend,
             mean_score=mean_score,
             task_results=task_results,
         )
@@ -334,7 +303,7 @@ def run_baseline_sync(
             while not observation.done:
                 action = _choose_action(
                     observation,
-                    agent_backend=display_backend,
+                    agent_backend=resolved_backend,
                     model=model,
                 )
                 observation = env.step(action)
@@ -345,7 +314,7 @@ def run_baseline_sync(
                     task_id=task.task_id,
                     title=task.title,
                     difficulty=task.difficulty,
-                    agent_backend=display_backend,
+                    agent_backend=resolved_backend,
                     score=grade.score,
                     steps_taken=state.step_count,
                     cumulative_reward=round(state.cumulative_reward, 4),
@@ -357,7 +326,7 @@ def run_baseline_sync(
         )
         return BaselineRunResult(
             model=resolved_config.model_name if resolved_config else None,
-            agent_backend=display_backend,
+            agent_backend=resolved_backend,
             mean_score=mean_score,
             task_results=task_results,
         )
@@ -374,12 +343,12 @@ def main() -> None:
     parser.add_argument(
         "--model",
         default=DEFAULT_MODEL,
-        help="Model override for OpenAI-compatible providers",
+        help="OpenAI model override",
     )
     parser.add_argument(
         "--agent",
         default="auto",
-        choices=("auto", "groq", "grok", "openai", "compatible", "scripted"),
+        choices=("auto", "openai", "scripted"),
         help="Which baseline backend to run",
     )
     args = parser.parse_args()

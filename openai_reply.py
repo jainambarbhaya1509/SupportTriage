@@ -1,9 +1,4 @@
-"""Reply generation helpers shared by the baseline and environment.
-
-The module name remains `groq_reply.py` for backwards compatibility, but all LLM
-calls now go through the OpenAI Python client so the project supports Groq,
-OpenAI, xAI Grok, and other OpenAI-compatible endpoints.
-"""
+"""OpenAI-backed reply generation helpers shared by the baseline and environment."""
 
 from __future__ import annotations
 
@@ -11,35 +6,21 @@ import re
 from typing import Any
 
 try:
-    from .llm_client import (
-        DEFAULT_GROQ_BASE_URL,
-        DEFAULT_GROQ_MODEL,
-        LLMConfig,
-        chat_completion,
-        resolve_llm_config,
-    )
+    from .llm_client import DEFAULT_OPENAI_MODEL, LLMConfig, chat_completion, resolve_openai_config
     from .models import SupportTriageObservation
     from .tasks import CUSTOM_TASK_ID, get_task, infer_sensitive_content
 except ImportError:
-    from llm_client import (
-        DEFAULT_GROQ_BASE_URL,
-        DEFAULT_GROQ_MODEL,
-        LLMConfig,
-        chat_completion,
-        resolve_llm_config,
-    )
+    from llm_client import DEFAULT_OPENAI_MODEL, LLMConfig, chat_completion, resolve_openai_config
     from models import SupportTriageObservation
     from tasks import CUSTOM_TASK_ID, get_task, infer_sensitive_content
 
+DEFAULT_MODEL = DEFAULT_OPENAI_MODEL
 DEFAULT_TIMEOUT_S = 30.0
-GROQ_CHAT_COMPLETIONS_URL = f"{DEFAULT_GROQ_BASE_URL.rstrip('/')}" + "/chat/completions"
 DIGIT_RE = re.compile(r"\d")
 CODE_FENCE_RE = re.compile(r"^```(?:\w+)?\s*|\s*```$", re.DOTALL)
 
 
-def clean_groq_text(raw: Any) -> str:
-    """Normalize model output into a plain single-paragraph reply."""
-
+def clean_model_text(raw: Any) -> str:
     if isinstance(raw, str):
         text = raw
     elif isinstance(raw, list):
@@ -61,12 +42,7 @@ def clean_groq_text(raw: Any) -> str:
     return text
 
 
-def build_reply_prompt(
-    observation: SupportTriageObservation,
-    ticket_id: str,
-) -> str:
-    """Build a safe, task-aware prompt for customer reply generation."""
-
+def build_reply_prompt(observation: SupportTriageObservation, ticket_id: str) -> str:
     task = get_task(observation.task_id)
     active_ticket = observation.active_ticket
     if active_ticket is None or active_ticket.ticket_id != ticket_id:
@@ -110,11 +86,8 @@ def build_reply_prompt(
     )
 
 
-def _sanitize_reply(
-    observation: SupportTriageObservation,
-    text: str,
-) -> str:
-    cleaned = clean_groq_text(text)
+def _sanitize_reply(observation: SupportTriageObservation, text: str) -> str:
+    cleaned = clean_model_text(text)
     if observation.task_id == "vip_incident_hard":
         cleaned = DIGIT_RE.sub("", cleaned)
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
@@ -141,15 +114,12 @@ def generate_llm_reply(
     observation: SupportTriageObservation,
     ticket_id: str,
     *,
-    preferred_provider: str | None = None,
     model_override: str | None = None,
 ) -> tuple[str, str]:
-    """Generate a customer-safe reply from the configured OpenAI-compatible provider."""
-
-    config = resolve_llm_config(preferred_provider, model_override=model_override)
+    config = resolve_openai_config(model_override=model_override)
     if config is None:
         raise ValueError(
-            "Reply message is empty and no LLM is configured. Set API_BASE_URL, MODEL_NAME, and HF_TOKEN, or configure GROQ_API_KEY / OPENAI_API_KEY for local fallback use."
+            "Reply message is empty and OpenAI is not configured. Set API_BASE_URL, MODEL_NAME, and HF_TOKEN."
         )
     return (
         _generate_reply_with_config(
@@ -161,22 +131,14 @@ def generate_llm_reply(
     )
 
 
-def generate_groq_reply(
-    api_key: str,
-    model: str,
+def generate_openai_reply(
     observation: SupportTriageObservation,
     ticket_id: str,
+    *,
+    model_override: str | None = None,
 ) -> str:
-    """Backwards-compatible Groq wrapper used by legacy tests and utilities."""
-
-    config = LLMConfig(
-        provider="groq",
-        base_url=DEFAULT_GROQ_BASE_URL,
-        model_name=model or DEFAULT_GROQ_MODEL,
-        api_key=api_key,
-    )
-    return _generate_reply_with_config(
-        config,
+    return generate_llm_reply(
         observation=observation,
         ticket_id=ticket_id,
-    )
+        model_override=model_override,
+    )[0]
