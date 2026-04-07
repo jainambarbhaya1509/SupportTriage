@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import json
+import os
 import sys
-from typing import Any
 
 from baseline import scripted_policy_action
 from graders import grade_support_episode
@@ -14,9 +13,87 @@ from openai_reply import generate_llm_reply
 from server.support_triage_environment import SupportTriageEnvironment
 from tasks import TASKS
 
+BENCHMARK = os.getenv("SUPPORT_TRIAGE_BENCHMARK", "support_triage_env")
 
-def emit(tag: str, payload: dict[str, Any]) -> None:
-    print(f"[{tag}] {json.dumps(payload, ensure_ascii=True, sort_keys=True)}", flush=True)
+
+def _format_bool(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _format_decimal(value: float) -> str:
+    return f"{value:.2f}"
+
+
+def _format_error(value: str | None) -> str:
+    if not value:
+        return "null"
+    return value.replace("\n", " ").strip() or "null"
+
+
+def _quote(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _format_action(action: SupportTriageAction) -> str:
+    if action.action_type == "complete_episode":
+        return "complete_episode()"
+    if action.action_type == "open_ticket":
+        return f"open_ticket('{_quote(action.ticket_id or '')}')"
+    if action.action_type == "reply_to_ticket":
+        return f"reply_to_ticket('{_quote(action.ticket_id or '')}')"
+    if action.action_type == "add_internal_note":
+        return f"add_internal_note('{_quote(action.ticket_id or '')}')"
+    if action.action_type == "redact_sensitive_data":
+        return f"redact_sensitive_data('{_quote(action.ticket_id or '')}')"
+
+    updates: list[str] = []
+    if action.priority:
+        updates.append(f"priority='{_quote(action.priority)}'")
+    if action.queue:
+        updates.append(f"queue='{_quote(action.queue)}'")
+    if action.status:
+        updates.append(f"status='{_quote(action.status)}'")
+    if action.tags:
+        tags = "[" + ",".join(f"'{_quote(tag)}'" for tag in action.tags) + "]"
+        updates.append(f"tags={tags}")
+    joined = ", ".join(updates)
+    suffix = f", {joined}" if joined else ""
+    return f"update_ticket('{_quote(action.ticket_id or '')}'{suffix})"
+
+
+def emit_start(*, task_name: str, model_name: str) -> None:
+    print(f"[START] task={task_name} env={BENCHMARK} model={model_name}", flush=True)
+
+
+def emit_step(
+    *,
+    step: int,
+    action: SupportTriageAction,
+    reward: float,
+    done: bool,
+    error: str | None,
+) -> None:
+    print(
+        "[STEP] "
+        f"step={step} "
+        f"action={_format_action(action)} "
+        f"reward={_format_decimal(reward)} "
+        f"done={_format_bool(done)} "
+        f"error={_format_error(error)}",
+        flush=True,
+    )
+
+
+def emit_end(*, success: bool, steps: int, score: float, rewards: list[float]) -> None:
+    reward_values = ",".join(_format_decimal(value) for value in rewards)
+    print(
+        "[END] "
+        f"success={_format_bool(success)} "
+        f"steps={steps} "
+        f"score={_format_decimal(score)} "
+        f"rewards={reward_values}",
+        flush=True,
+    )
 
 
 def choose_action(
@@ -44,51 +121,53 @@ def choose_action(
     )
 
 
-def run_task(task_id: str, model_name: str) -> dict[str, Any]:
+def run_task(task_id: str, model_name: str) -> dict[str, float | int | bool | str]:
     env = SupportTriageEnvironment()
-    observation = env.reset(task_id=task_id)
-    emit(
-        "STEP",
-        {
-            "event": "task_start",
+    rewards: list[float] = []
+    success = False
+    score = 0.0
+    steps = 0
+    emit_start(task_name=task_id, model_name=model_name)
+
+    try:
+        observation = env.reset(task_id=task_id)
+        while not observation.done and env.state.step_count < env.state.max_steps:
+            action, _provider_used = choose_action(observation, model_name)
+            observation = env.step(action)
+            rewards.append(observation.reward)
+            latest = env.state.action_history[-1] if env.state.action_history else None
+            error = env.state.latest_feedback if latest and latest.invalid else None
+            emit_step(
+                step=env.state.step_count,
+                action=action,
+                reward=observation.reward,
+                done=observation.done,
+                error=error,
+            )
+
+        grade = grade_support_episode(env.state)
+        success = grade.passed
+        score = grade.score
+        steps = env.state.step_count
+        return {
             "task_id": task_id,
-            "task_title": observation.task_title,
-            "difficulty": observation.difficulty,
-            "objective": observation.objective,
-            "max_steps": env.state.max_steps,
-        },
-    )
-
-    while not observation.done and env.state.step_count < env.state.max_steps:
-        action, provider_used = choose_action(observation, model_name)
-        observation = env.step(action)
-        emit(
-            "STEP",
-            {
-                "event": "action",
-                "task_id": task_id,
-                "step": env.state.step_count,
-                "action_type": action.action_type,
-                "ticket_id": action.ticket_id,
-                "provider": provider_used,
-                "reward": observation.reward,
-                "cumulative_reward": observation.cumulative_reward,
-                "completion_score": observation.completion_score,
-                "done": observation.done,
-            },
-        )
-
-    grade = grade_support_episode(env.state)
-    payload = {
-        "event": "task_end",
-        "task_id": task_id,
-        "score": grade.score,
-        "passed": grade.passed,
-        "steps": env.state.step_count,
-        "cumulative_reward": env.state.cumulative_reward,
-    }
-    emit("STEP", payload)
-    return payload
+            "score": grade.score,
+            "passed": grade.passed,
+            "steps": env.state.step_count,
+            "cumulative_reward": env.state.cumulative_reward,
+        }
+    except Exception as exc:
+        steps = env.state.step_count
+        print(f"ERROR: task={task_id} detail={exc}", file=sys.stderr, flush=True)
+        return {
+            "task_id": task_id,
+            "score": 0.0,
+            "passed": False,
+            "steps": steps,
+            "cumulative_reward": env.state.cumulative_reward,
+        }
+    finally:
+        emit_end(success=success, steps=steps, score=score, rewards=rewards)
 
 
 def main() -> None:
@@ -100,32 +179,18 @@ def main() -> None:
         )
         sys.exit(1)
 
-    emit(
-        "START",
-        {
-            "provider": config.provider,
-            "model_name": config.model_name,
-            "api_base_url": config.base_url,
-            "task_ids": [task.task_id for task in TASKS],
-        },
-    )
-
-    results: list[dict[str, Any]] = []
+    results: list[dict[str, float | int | bool | str]] = []
     for task in TASKS:
         results.append(run_task(task.task_id, config.model_name))
 
-    mean_score = round(sum(item["score"] for item in results) / len(results), 4)
-    emit(
-        "END",
-        {
-            "provider": config.provider,
-            "model_name": config.model_name,
-            "api_base_url": config.base_url,
-            "mean_score": mean_score,
-            "task_results": results,
-            "task_count": len(results),
-        },
-    )
+    failed = [result for result in results if not result["passed"]]
+    if failed:
+        print(
+            "WARNING: one or more tasks did not pass. "
+            + ", ".join(str(result["task_id"]) for result in failed),
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 if __name__ == "__main__":
