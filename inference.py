@@ -24,6 +24,10 @@ def _format_decimal(value: float) -> str:
     return f"{value:.2f}"
 
 
+def _format_score(value: float) -> str:
+    return _format_decimal(min(max(value, 0.01), 0.99))
+
+
 def _format_error(value: str | None) -> str:
     if not value:
         return "null"
@@ -90,7 +94,7 @@ def emit_end(*, success: bool, steps: int, score: float, rewards: list[float]) -
         "[END] "
         f"success={_format_bool(success)} "
         f"steps={steps} "
-        f"score={_format_decimal(score)} "
+        f"score={_format_score(score)} "
         f"rewards={reward_values}",
         flush=True,
     )
